@@ -1,4 +1,5 @@
 package name.felixbecker.mtbb
+import scala.concurrent.duration._
 
 object BotConfig {
   val systemName: String = System.getProperty("os.name")
@@ -6,4 +7,5 @@ object BotConfig {
   val userName = "MTBB"
   val hostname = "mumble.coding4.coffee"
   val port = 64738
+  val keepAliveInterval: FiniteDuration = 15.seconds
 }

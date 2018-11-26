@@ -2,12 +2,14 @@ package name.felixbecker.mtbb
 
 import java.nio.{ByteBuffer, ByteOrder}
 
-import akka.NotUsed
-import akka.actor.{ActorRef, ActorSystem}
+import akka.{Done, NotUsed}
+import akka.actor.{Actor, ActorRef, ActorSystem, Props}
 import akka.stream._
 import akka.stream.scaladsl.{Flow, Framing, Sink, Source}
 import akka.util.ByteString
-import name.felixbecker.mtbb.protobuf.MumbleProtos.{Authenticate, Ping, Version}
+import com.google.protobuf.GeneratedMessageV3
+import name.felixbecker.mtbb.MumbleClient.FlowStarted
+import name.felixbecker.mtbb.protobuf.MumbleProtos.{Authenticate, Ping, QueryUsers, Version}
 
 object MainStream extends App {
 
@@ -16,10 +18,9 @@ object MainStream extends App {
 
   val tlsConnection = MumbleTLSFlow(BotConfig.hostname, BotConfig.port)
 
-  val clientVersion = ByteString(Marshaller.marshall(Version.newBuilder().setRelease("""https://www.youtube.com/watch?v=Iew2KfocTcE (MTBB)""").setOs(BotConfig.systemName).setOsVersion(BotConfig.systemVersion).setVersion(1).build()))
-  val authenticate = ByteString(Marshaller.marshall(Authenticate.newBuilder().setUsername(BotConfig.userName).build()))
 
-  val actorTLSConnectionInput = Source.actorRef[ByteString](100, OverflowStrategy.fail)
+
+  val mumbleServerSource = Source.actorRef[GeneratedMessageV3](100, OverflowStrategy.fail)
 
   def computeFrameLength(offsetBytes: Array[Byte], computedSize: Int): Int = {
     println(s"Type ${ByteBuffer.wrap(offsetBytes).getShort()}, computed size: $computedSize ")
@@ -33,38 +34,47 @@ object MainStream extends App {
     ByteOrder.BIG_ENDIAN,
     computeFrameLength)
 
-  val extractorSink = Sink.foreach[ByteString] { bs =>
-    try {
-      val bb = bs.asByteBuffer
-      val typeCode = bb.getShort() // 2 byte
-      val typeLength = bb.getInt()
-
-      println(s"Type length: $typeLength")
-      println(s"All bytes received length: ${bs.length}")
-
-      val typeBytes = new Array[Byte](typeLength)
-      bb.get(typeBytes)
-
-      if (typeCode != 1) {
-        println(Unmarshaller.unmarshall(typeCode, typeLength, typeBytes))
-      } else {
-        println(s"Typecode 1 - typelengh $typeLength - ignoring")
-      }
-    } catch {
-      case t: Throwable => t.printStackTrace()
-    }
-
+  val byteStringToProtoBufGeneratedMessage: Flow[ByteString, GeneratedMessageV3, NotUsed] = Flow[ByteString].map { bs =>
+    val bb = bs.asByteBuffer
+    val typeCode = bb.getShort() // 2 byte
+    val typeLength = bb.getInt()
+    val typeBytes = new Array[Byte](typeLength)
+    bb.get(typeBytes)
+    Unmarshaller.unmarshall(typeCode, typeLength, typeBytes)
   }
 
-  val mumbleOutgoing: ActorRef = actorTLSConnectionInput.via(tlsConnection).via(frameStage).to(extractorSink).run()
+  val mumbleClient = actorSystem.actorOf(MumbleClient.props())
+  val mumbleClientSink = Sink.actorRef[GeneratedMessageV3](mumbleClient, Done)
 
-  def ping = ByteString(Marshaller.marshall(Ping.newBuilder().setTimestamp(System.currentTimeMillis()).build()))
+  val keepAlive: Flow[GeneratedMessageV3, GeneratedMessageV3, NotUsed] = Flow[GeneratedMessageV3].keepAlive(BotConfig.keepAliveInterval, () => createPingPackage)
 
-  mumbleOutgoing ! clientVersion
-  mumbleOutgoing ! authenticate
-  import actorSystem.dispatcher
+  /* Defined in mumble.proto: UDPTunnel, not used. Not even for tunneling UDP through TCP */
+  def isUDPTunnelPackage(rawByteString: ByteString): Boolean = {
+    rawByteString.asByteBuffer.getShort() == 1
+  }
 
-  import scala.concurrent.duration._
-  actorSystem.scheduler.schedule(5.second, 5.second, mumbleOutgoing, ping)
+  def createPingPackage = Ping.newBuilder().setTimestamp(System.currentTimeMillis()).build()
+
+  val marshallProtobufMessageToByteString: Flow[GeneratedMessageV3, ByteString, NotUsed] = Flow[GeneratedMessageV3].map { m =>
+    ByteString(Marshaller.marshall(m))
+  }
+
+  val mumbleServer: ActorRef = mumbleServerSource
+    .via(keepAlive) // https://github.com/mumble-voip/mumble/issues/3550
+    .via(marshallProtobufMessageToByteString)
+    .via(tlsConnection)
+    .via(frameStage)
+    .filterNot(isUDPTunnelPackage)
+    .via(byteStringToProtoBufGeneratedMessage)
+    .log("mumbleconnectionflow")
+    .to(mumbleClientSink)
+    .run()
+
+
+  mumbleClient ! FlowStarted(mumbleServer)
+
+
+
 
 }
+
