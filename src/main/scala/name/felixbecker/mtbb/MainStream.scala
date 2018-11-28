@@ -1,15 +1,15 @@
 package name.felixbecker.mtbb
 
-import java.nio.{ByteBuffer, ByteOrder}
+import java.nio.ByteOrder
 
-import akka.{Done, NotUsed}
-import akka.actor.{Actor, ActorRef, ActorSystem, Props}
+import akka.actor.{ActorRef, ActorSystem}
 import akka.stream._
 import akka.stream.scaladsl.{Flow, Framing, Sink, Source}
 import akka.util.ByteString
+import akka.{Done, NotUsed}
 import com.google.protobuf.GeneratedMessageV3
 import name.felixbecker.mtbb.MumbleClient.FlowStarted
-import name.felixbecker.mtbb.protobuf.MumbleProtos.{Authenticate, Ping, QueryUsers, Version}
+import name.felixbecker.mtbb.protobuf.MumbleProtos.Ping
 
 object MainStream extends App {
 
@@ -18,12 +18,9 @@ object MainStream extends App {
 
   val tlsConnection = MumbleTLSFlow(BotConfig.hostname, BotConfig.port)
 
-
-
   val mumbleServerSource = Source.actorRef[GeneratedMessageV3](100, OverflowStrategy.fail)
 
   def computeFrameLength(offsetBytes: Array[Byte], computedSize: Int): Int = {
-    println(s"Type ${ByteBuffer.wrap(offsetBytes).getShort()}, computed size: $computedSize ")
     computedSize + 6
   }
 
@@ -70,9 +67,9 @@ object MainStream extends App {
     .to(mumbleClientSink)
     .run()
 
-
   mumbleClient ! FlowStarted(mumbleServer)
 
+  val httpServer = actorSystem.actorOf(HttpServer.props(mumbleClient))
 
 
 
