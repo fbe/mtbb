@@ -1,4 +1,6 @@
 package name.felixbecker.mtbb
+import java.security.SecureRandom
+
 import scala.concurrent.duration._
 
 object BotConfig {

@@ -11,7 +11,7 @@ object MumbleClient {
 
   case object GetServerStatus
 
-  case class ServerStatus(channel: List[Channel] = Nil, users: List[User] = Nil)
+  case class ServerStatus(lastPingReceivedTS: Option[Long] = None, channel: List[Channel] = Nil, users: List[User] = Nil)
 
   case class Channel(
                       channelId: Int,
@@ -74,8 +74,16 @@ class MumbleClient() extends Actor {
         channel = serverStatus.channel.filterNot(_.channelId == cr.getChannelId)
       )
 
+    case ping: Ping =>
+      serverStatus = serverStatus.copy(lastPingReceivedTS = Some(System.currentTimeMillis()))
+
     case cs: ChannelState => onChannelState(cs)
     case us: UserState => onUserState(us)
+
+    case ss: ServerSync =>
+      val ownSid = serverStatus.users.find(_.name.contains(BotConfig.userName)).get.sessionId
+      val weltraum = serverStatus.channel.find(_.name.contains("weltraum")).get.channelId
+      mumbleServer.get ! UserState.newBuilder().setSession(ownSid).setActor(ownSid).setChannelId(weltraum).build()
 
     case unknown =>
       println(s"Received unknown message ${unknown.getClass}")
@@ -101,7 +109,6 @@ class MumbleClient() extends Actor {
         val position = if (cs.hasPosition) Some(cs.getPosition) else None
         val maxUsers = if (cs.hasMaxUsers) Some(cs.getMaxUsers) else None
 
-
         val ocCopy = oldChannel.getOrElse(Channel(cid))
         val newChannel = ocCopy.copy(
           parent = parent.orElse(ocCopy.parent),
@@ -118,6 +125,7 @@ class MumbleClient() extends Actor {
       case None =>
         println(s"ignoring channel state message $cs because channelId is missing")
     }
+
   }
 
   def opt[T](exists: Boolean, provide: => T): Option[T] = {
