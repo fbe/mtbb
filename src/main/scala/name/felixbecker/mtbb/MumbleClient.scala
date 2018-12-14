@@ -5,7 +5,7 @@ import name.felixbecker.mtbb.MumbleClient._
 import name.felixbecker.mtbb.protobuf.MumbleProtos.{ChannelRemove, _}
 
 object MumbleClient {
-  def props() = Props(classOf[MumbleClient])
+  def props(telegram: ActorRef) = Props(classOf[MumbleClient], telegram)
 
   case class FlowStarted(mumbleServer: ActorRef)
 
@@ -43,7 +43,7 @@ object MumbleClient {
 
 }
 
-class MumbleClient() extends Actor {
+class MumbleClient(telegram: ActorRef) extends Actor {
 
   val clientVersion = Version.newBuilder()
     .setRelease("""https://www.youtube.com/watch?v=Iew2KfocTcE (MTBB)""")
@@ -56,8 +56,12 @@ class MumbleClient() extends Actor {
     .setUsername(BotConfig.userName)
     .build()
 
-  private var mumbleServer: Option[ActorRef] = None
-  private var serverStatus: ServerStatus = ServerStatus()
+  var mumbleServer: Option[ActorRef] = None
+  var serverStatus: ServerStatus = ServerStatus()
+  def userName: Option[String] = serverStatus.users.find(_.sessionId == sessionId.get).map(_.name).head
+
+  /* both assigned after server sync */
+  var sessionId: Option[Int] = None
 
   override def receive: Receive = {
 
@@ -74,17 +78,29 @@ class MumbleClient() extends Actor {
         channel = serverStatus.channel.filterNot(_.channelId == cr.getChannelId)
       )
 
-    case ping: Ping =>
+    case p: Ping =>
       serverStatus = serverStatus.copy(lastPingReceivedTS = Some(System.currentTimeMillis()))
 
     case cs: ChannelState => onChannelState(cs)
     case us: UserState => onUserState(us)
 
     case ss: ServerSync =>
-      val ownSid = serverStatus.users.find(_.name.contains(BotConfig.userName)).get.sessionId
+      sessionId = Some(ss.getSession)
       val weltraum = serverStatus.channel.find(_.name.contains("weltraum")).get.channelId
-      mumbleServer.get ! UserState.newBuilder().setSession(ownSid).setActor(ownSid).setChannelId(weltraum).build()
+      mumbleServer.get ! UserState.newBuilder().setSession(sessionId.get).setActor(sessionId.get).setChannelId(weltraum).build()
 
+    case cs: CryptSetup =>
+      cs.getClientNonce
+      cs.getKey
+      cs.getServerNonce
+      // TODO do something with that
+
+    case tm: TextMessage =>
+      serverStatus.users.find(_.sessionId == tm.getActor).foreach { user =>
+        user.name.foreach { userName =>
+          telegram ! Telegram.NotifyTelegram(s"<b>${userName}</b>: ${tm.getMessage}")
+        }
+      }
     case unknown =>
       println(s"Received unknown message ${unknown.getClass}")
   }

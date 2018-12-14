@@ -40,7 +40,8 @@ object MainStream extends App {
     Unmarshaller.unmarshall(typeCode, typeLength, typeBytes)
   }
 
-  val mumbleClient = actorSystem.actorOf(MumbleClient.props())
+  val telegram = actorSystem.actorOf(Telegram.props)
+  val mumbleClient = actorSystem.actorOf(MumbleClient.props(telegram))
   val mumbleClientSink = Sink.actorRef[GeneratedMessageV3](mumbleClient, Done)
 
   val keepAlive: Flow[GeneratedMessageV3, GeneratedMessageV3, NotUsed] = Flow[GeneratedMessageV3].keepAlive(BotConfig.keepAliveInterval, () => createPingPackage)
@@ -68,6 +69,8 @@ object MainStream extends App {
     .run()
 
   mumbleClient ! FlowStarted(mumbleServer)
+
+
 
   val httpServer = actorSystem.actorOf(HttpServer.props(mumbleClient))
 
